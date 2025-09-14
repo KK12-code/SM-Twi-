@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Loginless Twitter</title>
+  <title>Soon to be big</title>
   <!-- Tailwind CSS CDN -->
   <script src="https://cdn.tailwindcss.com"></script>
   <!-- React and ReactDOM CDNs -->
@@ -45,7 +45,16 @@
 
     // Global variables from the environment
     const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-    const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+    const firebaseConfig = (typeof __firebase_config !== 'undefined' && __firebase_config !== '{}')
+      ? JSON.parse(__firebase_config)
+      : {
+          apiKey: "dummy-key",
+          authDomain: "dummy-project.firebaseapp.com",
+          projectId: "dummy-project",
+          storageBucket: "dummy-project.appspot.com",
+          messagingSenderId: "dummy-sender-id",
+          appId: "dummy-app-id"
+        };
     const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
     // Initialize Firebase
@@ -63,6 +72,7 @@
       signInWithCustomToken, signInAnonymously, onAuthStateChanged
     };
     window.firebaseAppId = appId;
+    window.firebaseConfig = firebaseConfig;
   </script>
 
   <script type="text/babel">
@@ -80,7 +90,19 @@
 
       // Initialize Firebase and set up auth listener
       useEffect(() => {
-        const { firebaseAuth, firebaseAuthToken, firebaseUtils: { signInWithCustomToken, signInAnonymously, onAuthStateChanged } } = window;
+        const { firebaseAuth, firebaseAuthToken, firebaseUtils: { signInWithCustomToken, signInAnonymously, onAuthStateChanged }, firebaseConfig } = window;
+
+        // If using dummy config, bypass Firebase auth for local development
+        if (firebaseConfig && firebaseConfig.apiKey === "dummy-key") {
+          setUserId("dummy-user-id");
+          setIsAuthReady(true);
+          const storedUsername = localStorage.getItem(USERNAME_KEY);
+          if (storedUsername) {
+            setUsername(storedUsername);
+          }
+          return; // Skip Firebase logic
+        }
+
         const auth = firebaseAuth;
 
         const storedUsername = localStorage.getItem(USERNAME_KEY);
@@ -117,7 +139,16 @@
       useEffect(() => {
         if (!isAuthReady) return;
 
-        const { firestoreDB, firebaseAppId, firebaseUtils: { collection, onSnapshot, query, orderBy } } = window;
+        const { firestoreDB, firebaseAppId, firebaseUtils: { collection, onSnapshot, query, orderBy }, firebaseConfig } = window;
+
+        if (firebaseConfig && firebaseConfig.apiKey === "dummy-key") {
+          const storedPosts = localStorage.getItem('dummy_posts');
+          if (storedPosts) {
+            setPosts(JSON.parse(storedPosts));
+          }
+          return;
+        }
+
         const postsCollectionRef = collection(firestoreDB, 'artifacts', firebaseAppId, 'public', 'data', 'posts');
         const q = query(postsCollectionRef, orderBy('timestamp', 'desc'));
 
@@ -147,7 +178,25 @@
           return;
         }
 
-        const { firestoreDB, firebaseAppId, firebaseUtils: { collection, addDoc } } = window;
+        const { firestoreDB, firebaseAppId, firebaseUtils: { collection, addDoc }, firebaseConfig } = window;
+
+        if (firebaseConfig && firebaseConfig.apiKey === "dummy-key") {
+          const newPost = {
+            id: new Date().getTime().toString(),
+            text: newPostText,
+            likes: [],
+            comments: [],
+            timestamp: new Date(),
+            authorId: userId,
+            authorName: username || 'Anonymous'
+          };
+          const updatedPosts = [newPost, ...posts];
+          setPosts(updatedPosts);
+          localStorage.setItem('dummy_posts', JSON.stringify(updatedPosts));
+          setNewPostText('');
+          return;
+        }
+
         const postsCollectionRef = collection(firestoreDB, 'artifacts', firebaseAppId, 'public', 'data', 'posts');
 
         try {
@@ -168,7 +217,21 @@
       const handleLike = async (postId, isLiked) => {
         if (!isAuthReady) return;
 
-        const { firestoreDB, firebaseAppId, firebaseUtils: { doc, updateDoc, arrayUnion, arrayRemove } } = window;
+        const { firestoreDB, firebaseAppId, firebaseUtils: { doc, updateDoc, arrayUnion, arrayRemove }, firebaseConfig } = window;
+
+        if (firebaseConfig && firebaseConfig.apiKey === "dummy-key") {
+            const updatedPosts = posts.map(p => {
+                if (p.id === postId) {
+                    const newLikes = isLiked ? p.likes.filter(uid => uid !== userId) : [...p.likes, userId];
+                    return { ...p, likes: newLikes };
+                }
+                return p;
+            });
+            setPosts(updatedPosts);
+            localStorage.setItem('dummy_posts', JSON.stringify(updatedPosts));
+            return;
+        }
+
         const postDocRef = doc(firestoreDB, 'artifacts', firebaseAppId, 'public', 'data', 'posts', postId);
 
         try {
@@ -189,7 +252,21 @@
       const handleComment = async (postId, commentText) => {
         if (!isAuthReady || commentText.trim() === '') return;
 
-        const { firestoreDB, firebaseAppId, firebaseUtils: { doc, updateDoc, arrayUnion } } = window;
+        const { firestoreDB, firebaseAppId, firebaseUtils: { doc, updateDoc, arrayUnion }, firebaseConfig } = window;
+
+        if (firebaseConfig && firebaseConfig.apiKey === "dummy-key") {
+            const newComment = { text: commentText, authorId: userId, authorName: username || 'Anonymous', timestamp: new Date().toISOString() };
+            const updatedPosts = posts.map(p => {
+                if (p.id === postId) {
+                    return { ...p, comments: [...p.comments, newComment] };
+                }
+                return p;
+            });
+            setPosts(updatedPosts);
+            localStorage.setItem('dummy_posts', JSON.stringify(updatedPosts));
+            return;
+        }
+
         const postDocRef = doc(firestoreDB, 'artifacts', firebaseAppId, 'public', 'data', 'posts', postId);
 
         try {
@@ -288,7 +365,7 @@
 
       return (
         <div className="w-full max-w-2xl bg-gray-200 p-6 sm:p-8 rounded-2xl shadow-xl">
-          <h1 className="text-3xl sm:text-4xl font-bold text-center text-gray-800 mb-6">Gemini's Feed</h1>
+          <h1 className="text-3xl sm:text-4xl font-bold text-center text-gray-800 mb-6">Soon to be Social Media</h1>
           <p className="text-sm text-gray-500 text-center mb-4 truncate">Your User ID: {userId}</p>
 
           <div className="bg-white p-5 rounded-2xl shadow-lg border border-gray-300 mb-6">
