@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loginless Twitter</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- React and ReactDOM CDNs -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <!-- Babel for JSX transformation -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <!-- Inter font -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      background-color: #f3f4f6;
+    }
+    .heart-icon {
+      transition: transform 0.2s ease-in-out;
+    }
+    .heart-icon.liked {
+      color: #ef4444;
+      transform: scale(1.2);
+    }
+    .heart-icon:not(.liked):hover {
+      transform: scale(1.1);
+      color: #9ca3af;
+    }
+  </style>
+</head>
+<body class="bg-gray-100 flex items-start justify-center min-h-screen p-4 sm:p-6">
+
+  <div id="root" class="w-full max-w-2xl"></div>
+
+  <!-- Firebase CDN -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, collection, addDoc, onSnapshot, orderBy, query, doc, updateDoc, arrayUnion, arrayRemove } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // Global variables from the environment
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+
+    // Expose global variables for the React component to use
+    window.firebaseApp = app;
+    window.firebaseAuth = auth;
+    window.firestoreDB = db;
+    window.firebaseAuthToken = initialAuthToken;
+    window.firebaseUtils = {
+      collection, addDoc, onSnapshot, orderBy, query, doc, updateDoc, arrayUnion, arrayRemove,
+      signInWithCustomToken, signInAnonymously, onAuthStateChanged
+    };
+    window.firebaseAppId = appId;
+  </script>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+
+    const App = () => {
+      const [posts, setPosts] = useState([]);
+      const [newPostText, setNewPostText] = useState('');
+      const [showEmptyAlert, setShowEmptyAlert] = useState(false);
+      const [userId, setUserId] = useState(null);
+      const [isAuthReady, setIsAuthReady] = useState(false);
+      const [username, setUsername] = useState('');
+      
+      const USERNAME_KEY = 'twitter_clone_username';
+
+      // Initialize Firebase and set up auth listener
+      useEffect(() => {
+        const { firebaseAuth, firebaseAuthToken, firebaseUtils: { signInWithCustomToken, signInAnonymously, onAuthStateChanged } } = window;
+        const auth = firebaseAuth;
+
+        const storedUsername = localStorage.getItem(USERNAME_KEY);
+        if (storedUsername) {
+          setUsername(storedUsername);
+        }
+
+        const unsubscribe = onAuthStateChanged(auth, async (user) => {
+          if (user) {
+            setUserId(user.uid);
+            setIsAuthReady(true);
+          } else {
+            try {
+              if (firebaseAuthToken) {
+                await signInWithCustomToken(auth, firebaseAuthToken);
+              } else {
+                await signInAnonymously(auth);
+              }
+            } catch (error) {
+              console.error("Firebase auth error:", error);
+            }
+          }
+        });
+        return () => unsubscribe();
+      }, []);
+
+      const handleUsernameChange = (e) => {
+        const newUsername = e.target.value;
+        setUsername(newUsername);
+        localStorage.setItem(USERNAME_KEY, newUsername);
+      };
+
+      // Set up real-time listener for posts from Firestore
+      useEffect(() => {
+        if (!isAuthReady) return;
+
+        const { firestoreDB, firebaseAppId, firebaseUtils: { collection, onSnapshot, query, orderBy } } = window;
+        const postsCollectionRef = collection(firestoreDB, 'artifacts', firebaseAppId, 'public', 'data', 'posts');
+        const q = query(postsCollectionRef, orderBy('timestamp', 'desc'));
+
+        const unsubscribe = onSnapshot(q, (querySnapshot) => {
+          const fetchedPosts = [];
+          querySnapshot.forEach((doc) => {
+            const data = doc.data();
+            fetchedPosts.push({
+              id: doc.id,
+              ...data,
+              // Convert the Firestore timestamp to a JS Date object
+              timestamp: data.timestamp?.toDate() || new Date()
+            });
+          });
+          setPosts(fetchedPosts);
+        }, (error) => {
+          console.error("Error fetching posts: ", error);
+        });
+
+        return () => unsubscribe();
+      }, [isAuthReady]);
+
+      const handlePost = async () => {
+        if (!isAuthReady || newPostText.trim() === '') {
+          setShowEmptyAlert(true);
+          setTimeout(() => setShowEmptyAlert(false), 2000);
+          return;
+        }
+
+        const { firestoreDB, firebaseAppId, firebaseUtils: { collection, addDoc } } = window;
+        const postsCollectionRef = collection(firestoreDB, 'artifacts', firebaseAppId, 'public', 'data', 'posts');
+
+        try {
+          await addDoc(postsCollectionRef, {
+            text: newPostText,
+            likes: [], // Store user IDs of those who liked the post
+            comments: [], // Store comments as an array of objects
+            timestamp: new Date(),
+            authorId: userId,
+            authorName: username || 'Anonymous'
+          });
+          setNewPostText('');
+        } catch (e) {
+          console.error("Error adding document: ", e);
+        }
+      };
+
+      const handleLike = async (postId, isLiked) => {
+        if (!isAuthReady) return;
+
+        const { firestoreDB, firebaseAppId, firebaseUtils: { doc, updateDoc, arrayUnion, arrayRemove } } = window;
+        const postDocRef = doc(firestoreDB, 'artifacts', firebaseAppId, 'public', 'data', 'posts', postId);
+
+        try {
+          if (isLiked) {
+            await updateDoc(postDocRef, {
+              likes: arrayRemove(userId)
+            });
+          } else {
+            await updateDoc(postDocRef, {
+              likes: arrayUnion(userId)
+            });
+          }
+        } catch (e) {
+          console.error("Error updating document: ", e);
+        }
+      };
+
+      const handleComment = async (postId, commentText) => {
+        if (!isAuthReady || commentText.trim() === '') return;
+
+        const { firestoreDB, firebaseAppId, firebaseUtils: { doc, updateDoc, arrayUnion } } = window;
+        const postDocRef = doc(firestoreDB, 'artifacts', firebaseAppId, 'public', 'data', 'posts', postId);
+
+        try {
+          await updateDoc(postDocRef, {
+            comments: arrayUnion({ text: commentText, authorId: userId, authorName: username || 'Anonymous', timestamp: new Date().toISOString() })
+          });
+        } catch (e) {
+          console.error("Error adding comment: ", e);
+        }
+      };
+
+      const formatTimestamp = (timestamp) => {
+        const now = new Date();
+        const postTime = new Date(timestamp);
+        const diffInMinutes = Math.floor((now - postTime) / (1000 * 60));
+        const diffInHours = Math.floor(diffInMinutes / 60);
+        const diffInDays = Math.floor(diffInHours / 24);
+
+        if (diffInMinutes < 1) return 'now';
+        if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
+        if (diffInHours < 24) return `${diffInHours}h ago`;
+        if (diffInDays < 7) return `${diffInDays}d ago`;
+        
+        return postTime.toLocaleDateString();
+      };
+      
+      const Post = ({ post, onLike, onComment, currentUserId }) => {
+        const [commentText, setCommentText] = useState('');
+        const isLikedByUser = post.likes.includes(currentUserId);
+
+        const handleCommentSubmit = () => {
+          onComment(post.id, commentText);
+          setCommentText('');
+        };
+
+        return (
+          <div className="bg-white p-5 rounded-xl shadow-lg border border-gray-200 mb-4">
+            <div className="flex items-center space-x-2 mb-2">
+                <span className="font-semibold text-blue-600 text-lg">@{post.authorName}</span>
+                <span className="text-gray-500 text-sm">·</span>
+                <span className="text-gray-500 text-sm">{formatTimestamp(post.timestamp)}</span>
+            </div>
+            <p className="text-gray-800 text-lg break-words mb-3">{post.text}</p>
+            <div className="flex items-center space-x-4 border-t border-gray-200 pt-3">
+              <button
+                onClick={() => onLike(post.id, isLikedByUser)}
+                className="flex items-center space-x-1 focus:outline-none"
+              >
+                <svg
+                  className={`w-6 h-6 heart-icon ${isLikedByUser ? 'text-red-500' : 'text-gray-400'}`}
+                  fill="currentColor"
+                  viewBox="0 0 24 24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    fillRule="evenodd"
+                    d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5A5.5 5.5 0 017.5 3c2.45 0 4.24 1.22 5.5 3.36C14.26 4.22 16.05 3 18.5 3A5.5 5.5 0 0124 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"
+                    clipRule="evenodd"
+                  />
+                </svg>
+                <span className="text-gray-600 font-semibold">{post.likes.length}</span>
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <div className="flex items-center space-x-2">
+                <input
+                  type="text"
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
+                  placeholder="Write a comment..."
+                  className="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+                />
+                <button
+                  onClick={handleCommentSubmit}
+                  className="px-4 py-2 bg-blue-500 text-white font-semibold rounded-lg shadow hover:bg-blue-600 transition"
+                >
+                  Comment
+                </button>
+              </div>
+              
+              {post.comments.length > 0 && (
+                <div className="mt-4 p-3 bg-gray-50 rounded-lg">
+                  <h4 className="font-semibold text-gray-700 mb-2">Comments ({post.comments.length})</h4>
+                  {post.comments.map((comment, index) => (
+                    <div key={index} className="text-gray-600 text-sm mb-1">
+                      <span className="font-semibold text-gray-800">@{comment.authorName || 'Anonymous'}:</span> {comment.text}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      };
+
+      return (
+        <div className="w-full max-w-2xl bg-gray-200 p-6 sm:p-8 rounded-2xl shadow-xl">
+          <h1 className="text-3xl sm:text-4xl font-bold text-center text-gray-800 mb-6">Gemini's Feed</h1>
+          <p className="text-sm text-gray-500 text-center mb-4 truncate">Your User ID: {userId}</p>
+
+          <div className="bg-white p-5 rounded-2xl shadow-lg border border-gray-300 mb-6">
+            <div className="flex items-center space-x-2 mb-4">
+              <label htmlFor="username" className="text-gray-700 font-medium whitespace-nowrap">Your Username:</label>
+              <input
+                id="username"
+                type="text"
+                value={username}
+                onChange={handleUsernameChange}
+                placeholder="Set your username"
+                className="w-full p-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+              />
+            </div>
+            <textarea
+              value={newPostText}
+              onChange={(e) => setNewPostText(e.target.value)}
+              placeholder="What's on your mind?"
+              className="w-full h-24 p-4 border border-gray-300 rounded-xl resize-none focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
+            ></textarea>
+            {showEmptyAlert && (
+              <p className="text-red-500 text-sm mt-2 text-center transition-opacity duration-300">
+                Post cannot be empty.
+              </p>
+            )}
+            <div className="flex justify-end mt-4">
+              <button
+                onClick={handlePost}
+                className="px-6 py-2 bg-blue-500 text-white font-semibold rounded-xl shadow-md hover:bg-blue-600 transition"
+                disabled={!isAuthReady}
+              >
+                Post
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            {!isAuthReady ? (
+                <div className="flex justify-center items-center h-48">
+                    <p className="text-gray-500 text-lg">Loading...</p>
+                </div>
+            ) : posts.length > 0 ? (
+              posts.map(post => (
+                <Post key={post.id} post={post} onLike={handleLike} onComment={handleComment} currentUserId={userId} />
+              ))
+            ) : (
+              <p className="text-center text-gray-500 p-6 bg-white rounded-xl shadow border border-gray-200">
+                No posts yet. Be the first to post!
+              </p>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+
+  </script>
+</body>
+</html>
